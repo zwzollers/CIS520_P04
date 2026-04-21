@@ -79,12 +79,15 @@ int parse_positive_num(const char *text, size_t *out_result)
         return 0;
     }
 
-    // zero check (if user passed in 0 we'd be using 0 processes / 0 batch size, which makes no sense)    if(value == 0ULL){
-    return 0;
+    // zero check (if user passed in 0 we'd be using 0 processes / 0 batch size, which makes no sense)
+    if (value == 0ULL)
+    {
+        return 0;
+    }
 
-*out_result = (size_t)value;
+    *out_result = (size_t)value;
 
-return 1;
+    return 1;
 }
 
 /*
@@ -247,41 +250,60 @@ int process_batch_parallel(LineInfo *lines, int *results, size_t line_count, int
         actual_procs = 1;
     }
 
-    // pack all line text into a flat char buffer and record each line's length, so workers can unpack it
-    lengths = malloc(line_count * sizeof(int));
-    if (lengths == NULL)
+    // rank 0 packs all line text into a flat char buffer; workers allocate after receiving total_chars
+    if (PID == 0)
     {
-        return 0;
+        lengths = malloc(line_count * sizeof(int));
+        if (lengths == NULL)
+        {
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+
+        total_chars = 0;
+        for (i = 0; i < line_count; i++)
+        {
+            lengths[i] = (int)lines[i].length + 1;
+            total_chars += lengths[i];
+        }
+
+        flat_text = malloc(total_chars);
+        if (flat_text == NULL)
+        {
+            free(lengths);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+
+        offset = 0;
+        for (i = 0; i < line_count; i++)
+        {
+            memcpy(flat_text + offset, lines[i].text, lengths[i]);
+            offset += lengths[i];
+        }
     }
 
-    total_chars = 0;
-    for (i = 0; i < line_count; i++)
-    {
-        lengths[i] = (int)lines[i].length + 1;
-        total_chars += lengths[i];
-    }
-
-    flat_text = malloc(total_chars);
-    if (flat_text == NULL)
-    {
-        free(lengths);
-        return 0;
-    }
-
-    offset = 0;
-    for (i = 0; i < line_count; i++)
-    {
-        memcpy(flat_text + offset, lines[i].text, lengths[i]);
-        offset += lengths[i];
-    }
-
-    // broadcast line count, lengths array, and flat text to all processes
-    MPI_Bcast(&line_count, 1, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
     MPI_Bcast(&total_chars, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (PID != 0)
+    {
+        lengths = malloc(line_count * sizeof(int));
+        if (lengths == NULL)
+        {
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+
+        flat_text = malloc(total_chars);
+        if (flat_text == NULL)
+        {
+            free(lengths);
+            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+        }
+    }
+
+    // Step 3: now all ranks have valid buffers for the data Bcasts
     MPI_Bcast(lengths, (int)line_count, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(flat_text, total_chars, MPI_CHAR, 0, MPI_COMM_WORLD);
 
-    // compute this process's slice using the same even-disbursement logic as the original pthread version
+    // compute this process's slice using the same even-disbursement logic as pthread version
     base_line_count = line_count / actual_procs;
     remainder_line_count = line_count % actual_procs;
     next_start = 0;
@@ -405,21 +427,12 @@ int main(int argc, char *argv[])
 {
     FILE *fp = NULL;
     LineInfo *lines = NULL;
-
-    // holds our per-line max ASCII values
     int *results = NULL;
-
     size_t batch_lines;
     size_t lines_read;
-
     unsigned long long next_line_num = 0ULL;
-
-    // indicator for whether to return success or failure is present during main program loop so that value is known outside of loop
     int errorPresent = 0;
-
-    // Used in below loop
     size_t i;
-
     int PID;
     int number_of_processes;
 
@@ -427,7 +440,6 @@ int main(int argc, char *argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &PID);
     MPI_Comm_size(MPI_COMM_WORLD, &number_of_processes);
 
-    // argument count validation (rank 0 only, since only rank 0 reads the file)
     if (PID == 0)
     {
         if (argc < 2 || argc > 3)
@@ -437,15 +449,12 @@ int main(int argc, char *argv[])
         }
     }
 
-    // validate batch_lines input, if present. Otherwise provide default batch size (50000).
     if (argc == 3)
     {
         if (!parse_positive_num(argv[2], &batch_lines))
         {
             if (PID == 0)
-            {
                 fprintf(stderr, "Invalid batch_lines: %s\n", argv[2]);
-            }
             MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         }
     }
@@ -454,7 +463,7 @@ int main(int argc, char *argv[])
         batch_lines = 50000;
     }
 
-    // rank 0 opens the file; workers skip this and wait for broadcast data in process_batch_parallel
+    // rank 0 opens the file
     if (PID == 0)
     {
         fp = fopen(argv[1], "r");
@@ -463,49 +472,42 @@ int main(int argc, char *argv[])
             perror("fopen");
             MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         }
-
-        // allocation of results and lines for saving line-by-line data and our max-ASCII findings
-        lines = calloc(batch_lines, sizeof(*lines));
-        results = malloc(batch_lines * sizeof(*results));
-
-        // allocation null check, exit on fail
-        if (lines == NULL || results == NULL)
-        {
-            fprintf(stderr, "Memory allocation failed.\n");
-            fclose(fp);
-            free(lines);
-            free(results);
-            MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
-        }
     }
 
-    // primary loop - rank 0 reads and broadcasts batches; all ranks participate in processing
+    // all ranks allocate lines and results
+    lines   = calloc(batch_lines, sizeof(*lines));
+    results = malloc(batch_lines * sizeof(*results));
+
+    if (lines == NULL || results == NULL)
+    {
+        fprintf(stderr, "Memory allocation failed.\n");
+        if (PID == 0) fclose(fp);
+        free(lines);
+        free(results);
+        MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
+    }
+
+    // primary loop
     while (1)
     {
         lines_read = 0;
 
-        // rank 0 reads the next batch; workers receive data via broadcast inside process_batch_parallel
         if (PID == 0)
         {
             if (!read_batch(fp, lines, batch_lines, &lines_read, &next_line_num))
             {
                 fprintf(stderr, "Batch read failed.\n");
                 errorPresent = 1;
-                // broadcast 0 lines_read so workers know to exit the loop
-                MPI_Bcast(&lines_read, 1, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
-                break;
+                lines_read = 0;
             }
         }
 
-        // rank 0 broadcasts lines_read so all processes know whether to continue or exit
+        // all ranks learn whether there is work to do
         MPI_Bcast(&lines_read, 1, MPI_UNSIGNED_LONG, 0, MPI_COMM_WORLD);
 
         if (lines_read == 0)
-        {
             break;
-        }
 
-        // run the current batch across all MPI processes
         if (!process_batch_parallel(lines, results, lines_read, number_of_processes, PID))
         {
             if (PID == 0)
@@ -517,21 +519,16 @@ int main(int argc, char *argv[])
             break;
         }
 
-        // rank 0 prints finished answers in-order. (in the format of line_number:max_ascii)
         if (PID == 0)
         {
             for (i = 0; i < lines_read; i++)
-            {
                 fprintf(stdout, "%llu:%d\n", lines[i].line_num, results[i]);
-            }
 
-            // Free all dynamically allocated strings for this batch
             free_batch(lines, lines_read);
 
-            // Reset LineInfo spots to have clean batch array for next loop iteration
             for (i = 0; i < lines_read; i++)
             {
-                lines[i].text = NULL;
+                lines[i].text   = NULL;
                 lines[i].length = 0;
                 lines[i].line_num = 0ULL;
             }
@@ -539,20 +536,12 @@ int main(int argc, char *argv[])
     }
 
     if (PID == 0)
-    {
         fclose(fp);
-        free(lines);
-        free(results);
-    }
+
+    free(lines);
+    free(results);
 
     MPI_Finalize();
 
-    if (errorPresent)
-    {
-        return EXIT_FAILURE;
-    }
-    else
-    {
-        return EXIT_SUCCESS;
-    }
+    return errorPresent ? EXIT_FAILURE : EXIT_SUCCESS;
 }
