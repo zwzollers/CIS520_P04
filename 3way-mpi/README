@@ -1,0 +1,41 @@
+3way-mpi - MPI Implementation
+==============================
+------------------------------
+Running Manually (for testing)
+------------------------------
+    mpirun -np <num_processes> ./3way-mpi <input_file> [batch_size]
+
+Example:
+    mpirun -np 4 ./3way-mpi /homes/eyv/cis520/wiki_dump.txt
+
+Optional batch_size argument controls how many lines are read at once
+(default: 50000).
+
+------------------------------
+Scheduling on Beocat via Slurm
+------------------------------
+Edit run.sh to set your desired configuration:
+
+    #SBATCH --nodes=<num_nodes>
+    #SBATCH --ntasks-per-node=<cores_per_node>
+    #SBATCH --mem-per-cpu=<memory>    (e.g. 1G, 512M, 64M)
+    #SBATCH --time=<hh:mm:ss>
+
+Submit a single job:
+
+    sbatch run.sh
+
+Submit multiple runs for statistical analysis:
+
+    for i in $(seq 1 10); do sbatch run.sh; done
+
+------------------------------
+Output
+------------------------------
+- logs/mpi-%j.out        stdout log for each job
+- logs/mpi-n*-c*-m*-*.err   real/user/sys timing for each job
+- logs/output_<job_id>.txt   full program output for each job
+
+To view timing results across all runs:
+
+    grep -H "real\|user\|sys" logs/*.err
