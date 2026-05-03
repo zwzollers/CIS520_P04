@@ -11,14 +11,16 @@
 # -I and -L for MPI stuff is not necessary
 #
 
-CC        = mpicc
+CC        = gcc
+CFLAGS = -Wall -Wextra
+LDFLAGS = -pthread
 
 #
 # Modify TOPDIR if you use your own include files and library files
 #
 
-PROGRAM   = hello			# name of the binary
-SRCS      = MPI_C_SAMPLE.c		# source file
+PROGRAM   = 3way-pthread			# name of the binary
+SRCS      = hw4-pthread.c		# source file
 OBJS      = $(SRCS:.c=.o)		# object file
 
 #
@@ -30,7 +32,10 @@ default: all
 all: $(PROGRAM) 
 
 $(PROGRAM): $(OBJS)
-	$(CC) $(OBJS) -o $(PROGRAM) $(LDFLAGS)
+	$(CC) $(CFLAGS) $(OBJS) -o $(PROGRAM) $(LDFLAGS)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
 	/bin/rm -f $(OBJS) $(PROGRAM)
