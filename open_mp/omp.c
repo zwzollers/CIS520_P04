@@ -4,49 +4,12 @@
 #include <string.h>
 #include <sys/types.h>
 
-typedef struct line_result {
-    unsigned long long idx;
-    char max;
-} LineResult;
-
 /*
- * Parses string for positive numerical value and returns parsed value via out_result parameter
+ * finds the max ASCII char value in a string
  *
  * @param text String of text to be parsed
- * @param out_result location to store the result of parse (on success)
- * @returns 1 on successful parse, 0 on failure
+ * @returns the max value
  */
-int parse_positive_num(const char *text, size_t *out_result)
-{
-    unsigned long long value = 0;
-    char extra = '\0';
-
-    // null check
-    if (text == NULL || out_result == NULL)
-    {
-        return 0;
-    }
-
-    /*Parses real numbers, avoiding invalid strings.
-     * Parses 'text' as an unsigned long long and reads the next char if applicable.
-     * On success, only 'value' should have been assigned. On failure, either neither variable is assigned or both will be assigned.
-     */
-    if (sscanf(text, "%llu%c", &value, &extra) != 1)
-    {
-        return 0;
-    }
-
-    // zero check (if user passed in 0 we'd be using 0 processes / 0 batch size, which makes no sense)
-    if (value == 0ULL)
-    {
-        return 0;
-    }
-
-    *out_result = (size_t)value;
-
-    return 1;
-}
-
 char max_in_line(char* buffer) {
 
     char* ptr = buffer;
@@ -62,55 +25,71 @@ char max_in_line(char* buffer) {
     return (max);
 }
 
+/*
+ * find the maximum char in each line of a file
+ *
+ * @param text String of text to be parsed
+ * @returns the max value
+ */
 int main(int argc, char *argv[])
 {
+    // file pointer for the file being read
     FILE* fp = NULL;
-    int finished = 0;
-    char buffer[3000];
-    char results[1100000];
 
+    // is the process finished
+    int finished = 0;
+
+    // line buffer one per thread
+    char buffer[2000];
+
+    //
+    char results[100010];
+
+    // the global line count
+    unsigned long line = 0;
+
+    // the line that each thread is working on
+    unsigned long prv_line = 0;
+
+    // check args
+    if (argc != 2) {
+        fprintf(stderr, "Invalid argument count, usage: %s <input_file> \n", argv[0]);
+    }
+
+    // open the file
     fp = fopen(argv[1], "r");
+
     if (fp == NULL)
     {
         perror("fopen");
     }
 
-    if (results == NULL)
-    {
-        fprintf(stderr, "Memory allocation failed.\n");
-        fclose(fp);
-        free(results);
-        return(-1);
-    }
-
-    unsigned long line = 0;
-    unsigned long prv_line = 0;
-
-    printf("starting...\n");
-
+    // set up openMP to use thread
     #pragma omp parallel private(buffer, prv_line) shared(fp, finished, line, results) num_threads(40)
     while(1) {
 
-        if (finished) {
-            break;
-        }
-
+        // this section must be done by only 1 thread at a time to avoid incorrect line values being stored
         #pragma omp critical
         {
             finished = (EOF == fscanf(fp, "%[^\n]\n", buffer));
-            prv_line = line;
-            line += 1;
+            if (!finished) {
+                prv_line = line;
+                line += 1;
+            }
         }
 
         if (finished) {
             break;
         }
-        
+
+        // process line
         results[prv_line] = max_in_line(buffer);
     }
 
+    // close file
     fclose(fp);
 
+    // print results
     for (unsigned long i = 0; i < line; i++) {
         printf("%lu: %d\n", i, (int)results[i]);
     }
