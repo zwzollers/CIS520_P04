@@ -1,0 +1,50 @@
+3way-mpi - MPI Implementation
+==============================
+------------------------------
+Running Manually (for testing)
+------------------------------
+1. Load Module:
+    module load CMake/3.23.1-GCCcore-11.3.0 foss/2022a OpenMPI/4.1.4-GCC-11.3.0
+
+2. compile with "make"
+
+// Skeleton
+    mpirun -np <num_processes> ./3way-mpi <input_file> [batch_size]
+
+Example:
+    mpirun -np 4 ./3way-mpi /homes/eyv/cis520/wiki_dump.txt
+
+Optional batch_size argument controls how many lines are read at once.
+When using run.sh, batch_size is set automatically based on --mem-per-cpu:
+    64M  -> 2000 | 128M -> 5000 | 512M -> 20000 | other -> 50000
+
+------------------------------
+Scheduling on Beocat via Slurm
+------------------------------
+Edit run.sh to set your desired configuration:
+
+    #SBATCH --nodes=<num_nodes>
+    #SBATCH --ntasks-per-node=<cores_per_node>
+    #SBATCH --mem-per-cpu=<memory>    (e.g. 1G, 512M, 64M)
+    #SBATCH --time=<hh:mm:ss>
+
+Submit a single job:
+
+    sbatch run.sh
+
+Submit multiple runs for statistical analysis:
+
+    for i in $(seq 1 20); do sbatch run.sh; done
+
+------------------------------
+Output
+------------------------------
+
+All output goes to a single file per job:
+
+- logs/mpi-%j.out   node config, timing, and stdout for each job
+
+Node config and timing are printed to this file. Full program output
+is suppressed by default (redirected to /dev/null). To capture full
+output instead, swap the active/commented mpirun lines in run.sh.
+
